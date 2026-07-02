@@ -2,6 +2,7 @@
 
 import json
 import os
+import logging
 from datetime import datetime, timezone
 from typing import List
 
@@ -9,13 +10,15 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-RULES_FILE = "cleaner_rules.json"
+RULES_FILE = "cleaners.json"
 LOOP_TIME = 30
 SECONDS_IN_HOUR = 3600
 
+log = logging.getLogger(__name__)
+
 '''TO DO: 
 
-ADD AN OPTION TO NOT DELETE PINNED MESSAGES, MODIFY JSON FILE
+Think about using discord.purge() instead of manually deleting every line
 
 '''
 
@@ -52,7 +55,7 @@ class Cleaner(commands.Cog):
 
         now = datetime.now(timezone.utc)
 
-        print(f"Trying to clean! Time: {now}")
+        print(f"Trying to clean! Time: {str(datetime.now().time())}")
 
         for rule in self.rules:
 
@@ -62,6 +65,7 @@ class Cleaner(commands.Cog):
 
             limit = rule["limit_in_seconds"]
             user_id = rule["user_id"]  # None -> any user
+            delete_pinned = rule["delete_pinned"]
 
             try:
                 async for message in channel.history(limit=256):
@@ -70,14 +74,18 @@ class Cleaner(commands.Cog):
                     author_match = (message.author.id == user_id) or (user_id is None)  # because None means any user
 
                     if age > limit and author_match:
+
+                        if message.pinned and not delete_pinned:
+                            continue
+
                         try:
                             await message.delete()
                         except discord.Forbidden:
-                            print(f"I'm missing permissions! #{channel.name}")
+                            log.error(f"I'm missing permissions! #{channel.name}", exc_info=True)
                         except discord.HTTPException as error:
-                            print(f"I failed to delete the message: {error}")
+                            log.error(f"Failed to delete message: {error}", exc_info=True)
             except discord.Forbidden:
-                print(f"I can't read history in #{channel.name}!")
+                log.error(f"I can't read history in #{channel.name}!", exc_info=True)
 
     @clean_loop.before_loop
     async def before_clean(self):
@@ -91,15 +99,23 @@ class Cleaner(commands.Cog):
     @app_commands.describe(
         channel="The channel to clean",
         hour="Delete messages older than this many hours",
-        user="Delete messages from this user (empty=everyone)"
+        user="Delete messages from this user (empty=everyone)",
+        delete_pinned="Choose whether you want to delete pinned messages or not"
     )
     @app_commands.checks.has_permissions(administrator=True)
-    async def cleaner_add(self, interaction: discord.Interaction, channel: discord.TextChannel, hour: int, user: discord.Member | None = None):
+    async def cleaner_add(
+        self, interaction: discord.Interaction,
+        channel: discord.TextChannel,
+        hour: int,
+        user: discord.Member | None = None,
+        delete_pinned: bool = False
+    ):
 
         rule = {
             "channel_id": channel.id,
             "user_id": user.id if user else None,
-            "limit_in_seconds": hour * SECONDS_IN_HOUR
+            "limit_in_seconds": hour * SECONDS_IN_HOUR,
+            "delete_pinned": delete_pinned
         }
 
         user_str = user.mention if user else "everyone"
@@ -109,9 +125,11 @@ class Cleaner(commands.Cog):
                 #  Duplicate found, override current rules
 
                 existing["limit_in_seconds"] = rule["limit_in_seconds"]
+                existing["delete_pinned"] = rule["delete_pinned"]
                 save_rules(self.rules)
+
                 await interaction.response.send_message(
-                    f"Cleaner overridden: deleting messages older than {hour} hours in {channel.name} from {user_str}.",
+                    f"Cleaner overridden: deleting messages older than {hour} hours in {channel.name} from {user_str}. (DELETING PINNED: {delete_pinned})",
                     ephemeral=True
                 )
                 return 
@@ -120,7 +138,7 @@ class Cleaner(commands.Cog):
         save_rules(self.rules)
 
         await interaction.response.send_message(
-            f"Cleaner added: deleting messages older than {hour} hours in {channel.name} from {user_str}.",
+            f"Cleaner added: deleting messages older than {hour} hours in {channel.name} from {user_str}. (DELETING PINNED: {delete_pinned})",
             ephemeral=True
         )
 
@@ -135,10 +153,12 @@ class Cleaner(commands.Cog):
         user_id = user.id if user else None
         before = len(self.rules)
 
+        '''
         if user is not None:
             if user == 1:
                 print("Chosen, remove every cleaner")
                 return
+        '''
 
         new_rules = [r for r in self.rules if not (r["channel_id"] == channel.id and r["user_id"] == user_id)]
 
@@ -173,8 +193,9 @@ class Cleaner(commands.Cog):
             channel_str = channel.name if channel else f"unknown channel? ID: {c["channel_id"]}"
             user_str = f"{c["user_id"]}" if c["user_id"] else "everyone"
             hour = c["limit_in_seconds"] // 3600
+            delete_pinned = c["delete_pinned"]
 
-            lines.append(f"--- {channel_str} --- Delete messages from <@{user_str}> older than this many hours: {hour} ---")
+            lines.append(f"--- {channel_str} --- Delete messages from <@{user_str}> older than this many hours: {hour} --- deleting pinned? {delete_pinned} ---")
 
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 

@@ -14,8 +14,24 @@ from discord.ext import commands, tasks
 DISCORD_TOKEN = None
 APP_ID = None
 PUBLIC_KEY = None
-MY_GUILD_ID = None  # temporary
+MY_GUILD_ID = None  # temporary (i think)
 OWNER_ID = None
+
+
+'''TO DO: 
+
+MAKE FEEDBACK MODAL A COG INSTEAD OF KEEPING IT HERE
+
+Think about using discord.utils.setup_logging() instead of manually setting up logging
+
+'''
+
+
+def catch_unhandled_exception(loop, context):
+    '''Logs any error that was unhandled in code.'''
+
+    msg = context.get("exception", context["message"])
+    logging.getLogger().error(f"Unhandled exception: {msg}", exc_info=True)
 
 
 def parse_env_file(path):
@@ -44,7 +60,7 @@ def parse_env_file(path):
 class ThisClient(commands.Bot):
     '''Represents a client connection that connects to Discord. This class is used to interact with the Discord WebSocket and API.'''
 
-    user: discord.ClientUser  # so the type checker won't complain
+    user: discord.ClientUser  # so that type checker stops complaining
 
     def __init__(self, command_prefix, intents: discord.Intents):
         super().__init__(command_prefix=command_prefix, intents=intents)
@@ -82,9 +98,9 @@ class ThisClient(commands.Bot):
 
 class Feedback(discord.ui.Modal, title='Feedback'):
 
-    name = discord.ui.TextInput(label='Name', placeholder='Your name here...',)
+    name: discord.ui.TextInput = discord.ui.TextInput(label='Name', placeholder='Your name here...',)
 
-    feedback = discord.ui.TextInput(
+    feedback: discord.ui.TextInput = discord.ui.TextInput(
         label='What are your thoughts about my features?',
         style=discord.TextStyle.long,
         placeholder='Type your feedback here...',
@@ -95,7 +111,7 @@ class Feedback(discord.ui.Modal, title='Feedback'):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.send_message('Thank you for your feedback!', ephemeral=True)
 
-    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:  # type: ignore[override]
         await interaction.response.send_message('Something went not quite right.', ephemeral=True)
         traceback.print_exception(type(error), error, error.__traceback__)
 
@@ -142,6 +158,8 @@ async def greet(ctx):
 
 
 async def load():
+    '''Tries to load files from ./cogs directory.'''
+    
     for filename in os.listdir("./cogs"):
         if filename.endswith(".py"):
             try:
@@ -154,9 +172,12 @@ async def load():
 async def main():
 
     # logging section
-    
-    logger = logging.getLogger('discord')
-    logger.setLevel(logging.INFO)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+
+    discord_logger = logging.getLogger('discord')
+    discord_logger.setLevel(logging.INFO)
 
     handler = logging.handlers.RotatingFileHandler(
         filename='discord.log',
@@ -164,10 +185,18 @@ async def main():
         maxBytes=1024*1024*10,  # (10MB)
         backupCount=5
     )
+
     dt_fmt = '%Y-%m-%d %H:%M:%S'
     formatter = logging.Formatter('[{asctime}] [{levelname:<8}] {name}: {message}', dt_fmt, style='{')
     handler.setFormatter(formatter)
-    logger.addHandler(handler)
+    root_logger.addHandler(handler)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.ERROR)
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+    asyncio.get_event_loop().set_exception_handler(catch_unhandled_exception)  # just in case
 
     if not DISCORD_TOKEN:
         raise RuntimeError("Token is missing!")
